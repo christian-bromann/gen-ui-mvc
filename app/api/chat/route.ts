@@ -1,8 +1,28 @@
 import { streamingAgent } from "@/lib/agent";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 
+// Use Node.js runtime for LangChain compatibility
+export const runtime = "nodejs";
+export const maxDuration = 60; // Allow up to 60 seconds for agent responses
+
 export async function POST(request: Request) {
+  // Check for API key
+  if (!process.env.OPENAI_API_KEY) {
+    return new Response(
+      JSON.stringify({ error: "OPENAI_API_KEY environment variable is not set" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   const { messages, uiState } = await request.json();
+
+  // Validate messages
+  if (!messages || !Array.isArray(messages)) {
+    return new Response(
+      JSON.stringify({ error: "Invalid messages format" }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
 
   // Create a readable stream
   const encoder = new TextEncoder();
@@ -14,12 +34,12 @@ export async function POST(request: Request) {
         const langchainMessages = messages.map(
           (m: { role: string; content: string }) => {
             if (m.role === "user") {
-              return new HumanMessage(m.content);
+              return new HumanMessage(m.content || "");
             }
             if (m.role === "assistant") {
-              return new AIMessage(m.content);
+              return new AIMessage(m.content || "");
             }
-            return m;
+            return new HumanMessage(String(m.content || ""));
           }
         );
 
@@ -44,7 +64,13 @@ export async function POST(request: Request) {
         controller.close();
       } catch (error) {
         console.error("Stream error:", error);
-        controller.error(error);
+        // Send error as SSE event before closing
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ error: errorMessage })}\n\n`)
+        );
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
       }
     },
   });
