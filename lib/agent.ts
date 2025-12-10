@@ -518,12 +518,15 @@ Available actions:
 
 Current date: ${new Date().toLocaleDateString()}`;
 
-export const streamingAgent = createAgent({
-  model: "gpt-4o-mini",
-  tools,
-  systemPrompt,
-  middleware: [uiStateMiddleware],
-});
+// Factory function to create agent per request
+export function createStreamingAgent() {
+  return createAgent({
+    model: "gpt-4o-mini",
+    tools,
+    systemPrompt,
+    middleware: [uiStateMiddleware],
+  });
+}
 
 // Export types for the frontend
 export type AgentState = {
