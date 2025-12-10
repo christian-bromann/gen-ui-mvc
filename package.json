@@ -1,6 +1,8 @@
 {
   "name": "gen-ai-mvc",
   "version": "0.1.0",
+  "description": "An experimental AI-powered streaming dashboard where a LangChain agent dynamically controls UI components through natural language interactions",
+  "author": "Christian Bromann <christian@langchain.dev>",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,9 +11,16 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@langchain/core": "^1.1.4",
+    "@langchain/langgraph": "^1.0.4",
+    "@langchain/langgraph-sdk": "^1.2.0",
+    "@langchain/openai": "^1.1.3",
+    "langchain": "^1.1.5",
+    "lucide-react": "^0.559.0",
     "next": "16.0.8",
     "react": "19.2.1",
-    "react-dom": "19.2.1"
+    "react-dom": "19.2.1",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
