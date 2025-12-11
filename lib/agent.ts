@@ -1,14 +1,16 @@
-import { z } from "zod";
+import { registry, z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { ChatOpenAI } from "@langchain/openai";
+import { Command } from "@langchain/langgraph";
+import { AIMessageChunk, ToolMessage } from "@langchain/core/messages";
 
 import {
   GenreSchema,
   StreamingUIStateSchema,
-  type StreamingUIState,
   type Genre,
   type Content,
+  StreamingUIState,
 } from "./types";
 import {
   getContentByGenre,
@@ -22,12 +24,42 @@ import {
   getContentById,
 } from "./mock-data";
 
+// ============ Agent State Definition ============
+
+// Define the UI state schema for the middleware
+const UIStateSchema = z.object({
+  uiState: StreamingUIStateSchema.default({
+    featuredContent: null,
+    recommendations: [],
+    recommendationReason: undefined,
+    trending: [],
+    trendingCategory: undefined,
+    continueWatching: [],
+    searchResults: [],
+    searchQuery: undefined,
+    userProfile: null,
+    activeGenre: null,
+    notifications: [],
+    loadingStates: {
+      recommendations: false,
+      trending: false,
+      search: false,
+      featured: false,
+    },
+  }),
+});
+
 // ============ Tool Definitions ============
 
-// Tool: Get movie/show recommendations by genre (simulates sub-agent)
+// Tool: Get movie/show recommendations by genre
 const getRecommendationsTool = tool(
-  async ({ genre, reason }): Promise<string> => {
-    // Simulate a sub-agent doing complex recommendation logic
+  async ({
+    genre,
+    reason,
+  }: {
+    genre?: Genre;
+    reason?: string;
+  }): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     let recommendations: Content[];
@@ -38,7 +70,6 @@ const getRecommendationsTool = tool(
       recommendationReason =
         reason || `Curated ${genre} picks based on your viewing history`;
     } else {
-      // Use user preferences for personalized recommendations
       recommendations = getRecommendationsForGenres(
         mockUserProfile.preferences.favoriteGenres as Genre[]
       );
@@ -46,12 +77,13 @@ const getRecommendationsTool = tool(
         reason || "Personalized picks based on your favorite genres";
     }
 
-    return JSON.stringify({
-      type: "recommendations",
-      data: {
-        recommendations: recommendations.slice(0, 6),
-        recommendationReason,
-        activeGenre: genre || null,
+    return new Command({
+      update: {
+        uiState: {
+          recommendations: recommendations.slice(0, 6),
+          recommendationReason,
+          activeGenre: genre || null,
+        },
       },
     });
   },
@@ -75,16 +107,17 @@ const getRecommendationsTool = tool(
 
 // Tool: Search for content
 const searchContentTool = tool(
-  async ({ query }): Promise<string> => {
+  async ({ query }: { query: string }): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     const results = searchContent(query);
 
-    return JSON.stringify({
-      type: "search",
-      data: {
-        searchResults: results,
-        searchQuery: query,
+    return new Command({
+      update: {
+        uiState: {
+          searchResults: results,
+          searchQuery: query,
+        },
       },
     });
   },
@@ -100,16 +133,17 @@ const searchContentTool = tool(
 
 // Tool: Get trending content
 const getTrendingTool = tool(
-  async ({ category }): Promise<string> => {
+  async ({ category }: { category?: string }): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 400));
 
     const trending = getTrendingContent();
 
-    return JSON.stringify({
-      type: "trending",
-      data: {
-        trending,
-        trendingCategory: category || "Top Rated This Week",
+    return new Command({
+      update: {
+        uiState: {
+          trending,
+          trendingCategory: category || "Top Rated This Week",
+        },
       },
     });
   },
@@ -128,7 +162,15 @@ const getTrendingTool = tool(
 
 // Tool: Set featured/hero content
 const setFeaturedContentTool = tool(
-  async ({ contentId, random, genre }): Promise<string> => {
+  async ({
+    contentId,
+    random,
+    genre,
+  }: {
+    contentId?: string;
+    random?: boolean;
+    genre?: Genre;
+  }): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     let featured: Content | undefined;
@@ -136,10 +178,8 @@ const setFeaturedContentTool = tool(
     if (contentId) {
       featured = getContentById(contentId);
     } else if (genre) {
-      // Get a random highly-rated content from the specified genre
-      const genreContent = getContentByGenre(genre as Genre);
+      const genreContent = getContentByGenre(genre);
       if (genreContent.length > 0) {
-        // Sort by rating and pick randomly from top ones
         const topContent = genreContent
           .sort((a, b) => b.rating - a.rating)
           .slice(0, 3);
@@ -152,16 +192,27 @@ const setFeaturedContentTool = tool(
     }
 
     if (!featured) {
-      return JSON.stringify({
-        type: "error",
-        message: "Content not found",
+      return new Command({
+        update: {
+          uiState: {
+            notifications: [
+              {
+                id: crypto.randomUUID(),
+                type: "error",
+                message: "Content not found",
+                timestamp: new Date().toISOString(),
+              },
+            ],
+          },
+        },
       });
     }
 
-    return JSON.stringify({
-      type: "featured",
-      data: {
-        featuredContent: featured,
+    return new Command({
+      update: {
+        uiState: {
+          featuredContent: featured,
+        },
       },
     });
   },
@@ -187,13 +238,14 @@ const setFeaturedContentTool = tool(
 
 // Tool: Get user's continue watching list
 const getContinueWatchingTool = tool(
-  async (): Promise<string> => {
+  async (): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    return JSON.stringify({
-      type: "continue_watching",
-      data: {
-        continueWatching: mockWatchHistory,
+    return new Command({
+      update: {
+        uiState: {
+          continueWatching: mockWatchHistory,
+        },
       },
     });
   },
@@ -207,13 +259,14 @@ const getContinueWatchingTool = tool(
 
 // Tool: Get user profile
 const getUserProfileTool = tool(
-  async (): Promise<string> => {
+  async (): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 150));
 
-    return JSON.stringify({
-      type: "profile",
-      data: {
-        userProfile: mockUserProfile,
+    return new Command({
+      update: {
+        uiState: {
+          userProfile: mockUserProfile,
+        },
       },
     });
   },
@@ -227,7 +280,15 @@ const getUserProfileTool = tool(
 
 // Tool: Update user preferences
 const updatePreferencesTool = tool(
-  async ({ favoriteGenres, autoplay, notifications }): Promise<string> => {
+  async ({
+    favoriteGenres,
+    autoplay,
+    notifications,
+  }: {
+    favoriteGenres?: Genre[];
+    autoplay?: boolean;
+    notifications?: boolean;
+  }): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     const updatedPreferences = { ...mockUserProfile.preferences };
@@ -247,18 +308,19 @@ const updatePreferencesTool = tool(
       preferences: updatedPreferences,
     };
 
-    return JSON.stringify({
-      type: "profile_update",
-      data: {
-        userProfile: updatedProfile,
-        notifications: [
-          {
-            id: crypto.randomUUID(),
-            type: "success",
-            message: "Your preferences have been updated!",
-            timestamp: new Date().toISOString(),
-          },
-        ],
+    return new Command({
+      update: {
+        uiState: {
+          userProfile: updatedProfile,
+          notifications: [
+            {
+              id: crypto.randomUUID(),
+              type: "success",
+              message: "Your preferences have been updated!",
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        },
       },
     });
   },
@@ -282,18 +344,25 @@ const updatePreferencesTool = tool(
 
 // Tool: Send notification to user
 const sendNotificationTool = tool(
-  async ({ message, type }): Promise<string> => {
-    return JSON.stringify({
-      type: "notification",
-      data: {
-        notifications: [
-          {
-            id: crypto.randomUUID(),
-            type: type || "info",
-            message,
-            timestamp: new Date().toISOString(),
-          },
-        ],
+  async ({
+    message,
+    type,
+  }: {
+    message: string;
+    type?: "info" | "success" | "warning" | "error";
+  }): Promise<Command> => {
+    return new Command({
+      update: {
+        uiState: {
+          notifications: [
+            {
+              id: crypto.randomUUID(),
+              type: type || "info",
+              message,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        },
       },
     });
   },
@@ -313,7 +382,13 @@ const sendNotificationTool = tool(
 
 // Tool: Get content details
 const getContentDetailsTool = tool(
-  async ({ contentId, title }): Promise<string> => {
+  async ({
+    contentId,
+    title,
+  }: {
+    contentId?: string;
+    title?: string;
+  }): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     let content: Content | undefined;
@@ -327,17 +402,27 @@ const getContentDetailsTool = tool(
     }
 
     if (!content) {
-      return JSON.stringify({
-        type: "error",
-        message: "Content not found",
+      return new Command({
+        update: {
+          uiState: {
+            notifications: [
+              {
+                id: crypto.randomUUID(),
+                type: "error",
+                message: "Content not found",
+                timestamp: new Date().toISOString(),
+              },
+            ],
+          },
+        },
       });
     }
 
-    // Set as featured to highlight it
-    return JSON.stringify({
-      type: "content_details",
-      data: {
-        featuredContent: content,
+    return new Command({
+      update: {
+        uiState: {
+          featuredContent: content,
+        },
       },
     });
   },
@@ -357,7 +442,7 @@ const getContentDetailsTool = tool(
 
 // Tool: Initialize/reset dashboard
 const initializeDashboardTool = tool(
-  async (): Promise<string> => {
+  async (): Promise<Command> => {
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     const featured = getFeaturedContent();
@@ -366,20 +451,21 @@ const initializeDashboardTool = tool(
     );
     const trending = getTrendingContent();
 
-    return JSON.stringify({
-      type: "initialize",
-      data: {
-        featuredContent: featured,
-        recommendations: recommendations.slice(0, 6),
-        recommendationReason: "Based on your viewing preferences",
-        trending: trending.slice(0, 8),
-        trendingCategory: "Trending Now",
-        continueWatching: mockWatchHistory,
-        userProfile: mockUserProfile,
-        searchResults: [],
-        searchQuery: undefined,
-        activeGenre: null,
-        notifications: [],
+    return new Command({
+      update: {
+        uiState: {
+          featuredContent: featured,
+          recommendations: recommendations.slice(0, 6),
+          recommendationReason: "Based on your viewing preferences",
+          trending: trending.slice(0, 8),
+          trendingCategory: "Trending Now",
+          continueWatching: mockWatchHistory,
+          userProfile: mockUserProfile,
+          searchResults: [],
+          searchQuery: undefined,
+          activeGenre: null,
+          notifications: [],
+        },
       },
     });
   },
@@ -393,88 +479,17 @@ const initializeDashboardTool = tool(
 
 // All tools
 const tools = [
-  getRecommendationsTool,
-  searchContentTool,
-  getTrendingTool,
+  // getRecommendationsTool,
+  // searchContentTool,
+  // getTrendingTool,
   setFeaturedContentTool,
-  getContinueWatchingTool,
-  getUserProfileTool,
+  // getContinueWatchingTool,
+  // getUserProfileTool,
   updatePreferencesTool,
   sendNotificationTool,
-  getContentDetailsTool,
-  initializeDashboardTool,
+  // getContentDetailsTool,
+  // initializeDashboardTool,
 ];
-
-// ============ UI State Middleware ============
-
-// Define the UI state schema for the middleware
-const UIStateSchema = z.object({
-  uiState: StreamingUIStateSchema.default({
-    featuredContent: null,
-    recommendations: [],
-    recommendationReason: undefined,
-    trending: [],
-    trendingCategory: undefined,
-    continueWatching: [],
-    searchResults: [],
-    searchQuery: undefined,
-    userProfile: null,
-    activeGenre: null,
-    notifications: [],
-    loadingStates: {
-      recommendations: false,
-      trending: false,
-      search: false,
-      featured: false,
-    },
-  }),
-});
-
-// Middleware that extracts UI state updates from tool results
-const uiStateMiddleware = createMiddleware({
-  name: "UIStateMiddleware",
-  stateSchema: UIStateSchema,
-
-  // After model response, merge any UI updates from tool call results
-  afterModel: (state) => {
-    // Get the messages to find tool results with UI updates
-    const messages = state.messages || [];
-    let uiUpdates: Partial<StreamingUIState> = {};
-
-    // Look through recent tool messages for UI updates
-    for (let i = Math.max(0, messages.length - 15); i < messages.length; i++) {
-      const msg = messages[i] as { content?: string | unknown; getType?: () => string } | undefined;
-      
-      // Check if this is a tool message
-      const msgType = msg?.getType?.();
-      if (msgType !== "tool") continue;
-
-      if (msg && typeof msg === "object" && "content" in msg) {
-        try {
-          const content =
-            typeof msg.content === "string"
-              ? msg.content
-              : JSON.stringify(msg.content);
-
-          const parsed = JSON.parse(content);
-          if (parsed.data) {
-            uiUpdates = { ...uiUpdates, ...parsed.data };
-          }
-        } catch {
-          // Ignore parsing errors
-        }
-      }
-    }
-
-    if (Object.keys(uiUpdates).length > 0) {
-      return {
-        uiState: { ...state.uiState, ...uiUpdates },
-      };
-    }
-
-    return;
-  },
-});
 
 // ============ Create Agent ============
 
@@ -497,30 +512,44 @@ GENRE MAPPING - When users ask for content by mood or description, map to these 
 - "documentary", "real", "educational" → genre: "documentary"
 - "suspense", "mystery", "thriller" → genre: "thriller"
 
-CRITICAL BEHAVIOR:
-1. When a user asks for genre-based content (e.g., "something scary", "sci-fi recommendations"):
-   - FIRST call get_recommendations with that genre to populate the recommendations row
-   - THEN call set_featured_content with random=true to highlight a top pick in the hero section
-   - This ensures both the hero AND the recommendations update!
-
 2. Always respond with a brief, friendly message explaining what you've shown them.
 
 Available actions:
-- get_recommendations: Show personalized movie/show recommendations (optionally by genre)
 - search_content: Search for specific movies, shows, actors, or directors
-- get_trending: Display trending and popular content
 - set_featured_content: Highlight a specific title in the hero section (use random=true for genre picks)
-- get_continue_watching: Show user's in-progress content
-- get_user_profile: Display user's profile and preferences
 - update_preferences: Change user settings like favorite genres
 - send_notification: Send alerts or confirmations
-- get_content_details: Show detailed info about a specific title
 - initialize_dashboard: Reset/initialize the full dashboard view
+
+ONLY CALL ONE TOOL AT A TIME.
 
 Current date: ${new Date().toLocaleDateString()}`;
 
 const model = new ChatOpenAI({
   model: "gpt-4o-mini",
+});
+
+const middleware = createMiddleware({
+  name: "my_middleware",
+  beforeModel: async (state, ctx) => {
+    console.log("state", state);
+    const lastMessage = state.messages.at(-1);
+    if (AIMessageChunk.isInstance(lastMessage)) {
+      const toolMessages: ToolMessage[] =
+        lastMessage.tool_calls?.map(
+          (toolCall) =>
+            new ToolMessage({
+              tool_call_id: toolCall.id!,
+              content: "Tool call successful",
+            })
+        ) || [];
+      return { messages: toolMessages };
+    }
+  },
+  afterModel: async (state, ctx) => {
+    console.log("state", state);
+    console.log("ctx", ctx);
+  },
 });
 
 // Factory function to create agent per request
@@ -529,12 +558,10 @@ export function createStreamingAgent() {
     model,
     tools,
     systemPrompt,
-    middleware: [uiStateMiddleware],
+    middleware: [middleware],
+    stateSchema: UIStateSchema,
   });
 }
 
-// Export types for the frontend
-export type AgentState = {
-  messages: unknown[];
-  uiState: StreamingUIState;
-};
+// Export the state annotation for consumers
+export { UIStateSchema };
