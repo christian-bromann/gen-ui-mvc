@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
+import { ChatOpenAI } from "@langchain/openai";
 
 import {
   GenreSchema,
@@ -518,10 +519,14 @@ Available actions:
 
 Current date: ${new Date().toLocaleDateString()}`;
 
+const model = new ChatOpenAI({
+  model: "gpt-4o-mini",
+});
+
 // Factory function to create agent per request
 export function createStreamingAgent() {
   return createAgent({
-    model: "gpt-4o-mini",
+    model,
     tools,
     systemPrompt,
     middleware: [uiStateMiddleware],
